@@ -1,3 +1,5 @@
+#![feature(link_args)]
+
 extern crate mon_artiste;
 
 use mon_artiste::render::svg::{SvgRender};
@@ -8,6 +10,9 @@ use std::convert::From;
 use std::env;
 use std::fs::File;
 use std::io::{self, Read, Write};
+
+use std::ffi::{CStr,CString};
+use std::os::raw::c_char;
 
 fn main() {
     let mut args = env::args();
@@ -63,21 +68,43 @@ fn get_table(table: &str) -> Table {
         _ => panic!("Unknown table name: {}", table),
     }
 }
-
 fn process(table: &str, in_file: &str, out_file: &str) -> Result<(), Error> {
     let mut input = File::open(in_file)?;
     let mut content = String::new();
     input.read_to_string(&mut content)?;
+
+    let svg = render_to_string(table, content, in_file)?;
+    let mut output = File::create(out_file)?;
+    Ok(write!(&mut output, "{}", svg)?)
+}
+
+fn render_to_string(table: &str, content: String, name: &str) -> Result<mon_artiste::svg::Svg, Error> {
     let table = get_table(table);
-    let s = content.parse::<Grid>()?.into_scene(&table);
+    let parsed = content.parse::<Grid>()?;
+    let s = parsed.into_scene(&table);
     let r = SvgRender {
         x_scale: 8, y_scale: 13,
         font_family: "monospace".to_string(), font_size: 13,
         show_gridlines: false,
         infer_rect_elements: false,
-        name: in_file.to_string(),
+        name: name.to_string(),
     };
-    let svg = r.render_s(&s);
-    let mut output = File::create(out_file)?;
-    Ok(write!(&mut output, "{}", svg)?)
+    Ok(r.render_s(&s))
+}
+
+#[link_args = "-s EXPORTED_FUNCTIONS=['_process_string'] -s DEMANGLE_SUPPORT=1"]
+extern {}
+
+#[no_mangle]
+pub fn process_string(table: *const c_char, content: *const c_char, name: *const c_char) -> *const c_char {
+    unsafe {
+        let t = CStr::from_ptr(table).to_str().expect("table must be valid UTF-8");
+        let c = CStr::from_ptr(content).to_str().expect("content must be valid UTF-8");
+        let n = CStr::from_ptr(name).to_str().expect("name must be valid UTF-8");
+        let output = render_to_string(t, c.into(), n).unwrap();
+        let string = CString::new(format!("{}", output)).unwrap();
+        let ptr = string.as_ptr();
+        std::mem::forget(string);
+        ptr
+    }
 }
